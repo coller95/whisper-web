@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Whisper WebGPU Transcriber</title>
+    <script type="module">
+        import { pipeline } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0';
+
+        let transcriber;
+        const status = document.getElementById('status');
+        const fileInput = document.getElementById('audioFile');
+        const transcribeBtn = document.getElementById('transcribeBtn');
+
+        // Initialize WebGPU Transcriber
+        async function initTranscriber() {
+            status.innerText = "Loading Model (WebGPU)...";
+            // Using 'whisper-tiny' for speed or 'distil-whisper-small' for accuracy
+            transcriber = await pipeline('automatic-speech-recognition', 'onnx-community/whisper-tiny', {
+                device: 'webgpu',
+                dtype: 'fp32', 
+            });
+            status.innerText = "Ready. WebGPU Active.";
+            transcribeBtn.disabled = false;
+        }
+
+        async function startTranscription() {
+            const file = fileInput.files[0];
+            if (!file) return;
+
+            status.innerText = "Transcribing Chinese Audio...";
+            const url = URL.createObjectURL(file);
+            
+            const result = await transcriber(url, {
+                language: 'chinese',
+                task: 'transcribe',
+                return_timestamps: true,
+            });
+
+            generateOutputs(result.chunks);
+            status.innerText = "Done! Files ready for download.";
+        }
+
+        function generateOutputs(chunks) {
+            // Generate CSV
+            let csvContent = "StartTime,EndTime,Text\n";
+            chunks.forEach(chunk => {
+                csvContent += `${chunk.timestamp[0]},${chunk.timestamp[1]},"${chunk.text.trim()}"\n`;
+            });
+            createDownloadLink(csvContent, 'Transcription.csv', 'text/csv');
+
+            // Generate SRT
+            let srtContent = "";
+            chunks.forEach((chunk, i) => {
+                const start = formatSrtTime(chunk.timestamp[0]);
+                const end = formatSrtTime(chunk.timestamp[1]);
+                srtContent += `${i + 1}\n${start} --> ${end}\n${chunk.text.trim()}\n\n`;
+            });
+            createDownloadLink(srtContent, 'Subtitles.srt', 'text/plain');
+        }
+
+        function formatSrtTime(seconds) {
+            const date = new Date(0);
+            date.setSeconds(seconds);
+            const ms = Math.floor((seconds % 1) * 1000);
+            return date.toISOString().substring(11, 19) + ',' + ms.toString().padStart(3, '0');
+        }
+
+        function createDownloadLink(content, fileName, mimeType) {
+            const blob = new Blob([content], { type: mimeType });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = fileName;
+            link.innerText = `Download ${fileName}`;
+            document.getElementById('downloads').appendChild(link);
+            document.getElementById('downloads').appendChild(document.createElement('br'));
+        }
+
+        window.initTranscriber = initTranscriber;
+        window.startTranscription = startTranscription;
+    </script>
+</head>
+<body onload="initTranscriber()">
+    <h2>Whisper WebGPU (Chinese M4A to CSV/SRT)</h2>
+    <p id="status">Checking WebGPU support...</p>
+    <input type="file" id="audioFile" accept=".m4a,.wav,.mp3" />
+    <button id="transcribeBtn" onclick="startTranscription()" disabled>Start Transcription</button>
+    <div id="downloads" style="margin-top: 20px;"></div>
+</body>
+</html>
