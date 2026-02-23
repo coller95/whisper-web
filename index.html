@@ -2,89 +2,160 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Whisper WebGPU Transcriber</title>
-    <script type="module">
-        import { pipeline } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0';
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Whisper WebGPU - Chinese Transcription</title>
+    <style>
+        :root { --primary: #0078d4; --bg: #f3f2f1; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: var(--bg); padding: 40px; color: #323130; max-width: 900px; margin: auto; }
+        .card { background: white; padding: 25px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); }
+        h2 { color: var(--primary); margin-top: 0; }
+        
+        #progressBar { width: 100%; height: 12px; background: #edebe9; border-radius: 6px; overflow: hidden; display: none; margin: 20px 0; }
+        #progressFill { width: 0%; height: 100%; background: var(--primary); transition: width 0.3s ease; }
+        
+        .controls { display: flex; gap: 10px; align-items: center; margin-top: 20px; }
+        input[type="file"] { padding: 10px; border: 1px solid #ccc; border-radius: 4px; flex-grow: 1; }
+        button { padding: 10px 20px; background: var(--primary); color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; }
+        button:disabled { background: #c8c6c4; cursor: not-allowed; }
 
-        let transcriber;
-        const status = document.getElementById('status');
-        const fileInput = document.getElementById('audioFile');
-        const transcribeBtn = document.getElementById('transcribeBtn');
+        #status { font-weight: 600; color: #605e5c; margin-bottom: 10px; }
+        #outputLog { background: #201f1e; color: #d1d1d1; padding: 15px; border-radius: 4px; height: 250px; overflow-y: auto; font-family: 'Cascadia Code', monospace; font-size: 0.9em; margin-top: 20px; }
+        .download-area { margin-top: 20px; display: flex; gap: 15px; }
+        .download-link { padding: 12px 20px; background: #107c10; color: white; text-decoration: none; border-radius: 4px; font-size: 0.9em; display: none; }
+    </style>
+</head>
+<body>
 
-        // Initialize WebGPU Transcriber
-        async function initTranscriber() {
-            status.innerText = "Loading Model (WebGPU)...";
-            // Using 'whisper-tiny' for speed or 'distil-whisper-small' for accuracy
+<div class="card">
+    <h2>Whisper WebGPU Transcriber</h2>
+    <p id="status">Status: Initializing WebGPU & Loading Model...</p>
+    
+    <div id="progressBar"><div id="progressFill"></div></div>
+
+    <div class="controls">
+        <input type="file" id="audioUpload" accept=".m4a,.wav,.mp3" />
+        <button id="startBtn" disabled>Start Transcription</button>
+    </div>
+
+    <div id="outputLog">--- Real-time Transcription Log ---<br></div>
+
+    <div class="download-area">
+        <a id="csvDownload" class="download-link">Download CSV</a>
+        <a id="srtDownload" class="download-link">Download SRT</a>
+    </div>
+</div>
+
+<script type="module">
+    import { pipeline } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0';
+
+    let transcriber;
+    const statusText = document.getElementById('status');
+    const startBtn = document.getElementById('startBtn');
+    const outputLog = document.getElementById('outputLog');
+    const progressFill = document.getElementById('progressFill');
+    const progressBar = document.getElementById('progressBar');
+
+    // Initialize the model
+    async function init() {
+        try {
+            // Using whisper-tiny for maximum speed on i9 integrated GPU
+            // Multi-lingual support is built-in
             transcriber = await pipeline('automatic-speech-recognition', 'onnx-community/whisper-tiny', {
                 device: 'webgpu',
-                dtype: 'fp32', 
             });
-            status.innerText = "Ready. WebGPU Active.";
-            transcribeBtn.disabled = false;
+            statusText.innerText = "Status: Ready. WebGPU Accelerated.";
+            startBtn.disabled = false;
+        } catch (err) {
+            statusText.innerText = "Error: WebGPU not supported or model failed to load.";
+            console.error(err);
         }
+    }
 
-        async function startTranscription() {
-            const file = fileInput.files[0];
-            if (!file) return;
+    async function processAudio() {
+        const file = document.getElementById('audioUpload').files[0];
+        if (!file) return;
 
-            status.innerText = "Transcribing Chinese Audio...";
-            const url = URL.createObjectURL(file);
-            
-            const result = await transcriber(url, {
+        // Reset UI
+        startBtn.disabled = true;
+        progressBar.style.display = 'block';
+        outputLog.innerHTML = "--- Processing Started ---<br>";
+        
+        const audioUrl = URL.createObjectURL(file);
+        
+        try {
+            const result = await transcriber(audioUrl, {
                 language: 'chinese',
                 task: 'transcribe',
                 return_timestamps: true,
+                chunk_length_s: 30, // Handles files longer than 30s
+                stride_length_s: 5,  // Prevents cutting off words at chunk borders
+                callback_function: (info) => {
+                    if (info.chunks && info.chunks.length > 0) {
+                        const lastChunk = info.chunks[info.chunks.length - 1];
+                        const timestamp = lastChunk.timestamp[0].toFixed(2);
+                        outputLog.innerHTML += `[${timestamp}s]: ${lastChunk.text}<br>`;
+                        outputLog.scrollTop = outputLog.scrollHeight;
+                        
+                        // Update progress bar (crude estimation)
+                        const percent = Math.min(95, (info.chunks.length * 10)); 
+                        progressFill.style.width = percent + "%";
+                    }
+                }
             });
 
-            generateOutputs(result.chunks);
-            status.innerText = "Done! Files ready for download.";
+            statusText.innerText = "Status: Completed!";
+            progressFill.style.width = "100%";
+            generateFiles(result.chunks);
+
+        } catch (err) {
+            statusText.innerText = "Status: Error during transcription.";
+            console.error(err);
         }
+        startBtn.disabled = false;
+    }
 
-        function generateOutputs(chunks) {
-            // Generate CSV
-            let csvContent = "StartTime,EndTime,Text\n";
-            chunks.forEach(chunk => {
-                csvContent += `${chunk.timestamp[0]},${chunk.timestamp[1]},"${chunk.text.trim()}"\n`;
-            });
-            createDownloadLink(csvContent, 'Transcription.csv', 'text/csv');
+    function generateFiles(chunks) {
+        // 1. Generate CSV
+        let csvContent = "StartTime,EndTime,Text\n";
+        // 2. Generate SRT
+        let srtContent = "";
 
-            // Generate SRT
-            let srtContent = "";
-            chunks.forEach((chunk, i) => {
-                const start = formatSrtTime(chunk.timestamp[0]);
-                const end = formatSrtTime(chunk.timestamp[1]);
-                srtContent += `${i + 1}\n${start} --> ${end}\n${chunk.text.trim()}\n\n`;
-            });
-            createDownloadLink(srtContent, 'Subtitles.srt', 'text/plain');
-        }
+        chunks.forEach((chunk, index) => {
+            const start = chunk.timestamp[0];
+            const end = chunk.timestamp[1];
+            const text = chunk.text.trim();
 
-        function formatSrtTime(seconds) {
-            const date = new Date(0);
-            date.setSeconds(seconds);
-            const ms = Math.floor((seconds % 1) * 1000);
-            return date.toISOString().substring(11, 19) + ',' + ms.toString().padStart(3, '0');
-        }
+            csvContent += `${start},${end},"${text}"\n`;
+            
+            srtContent += `${index + 1}\n`;
+            srtContent += `${formatSrtTime(start)} --> ${formatSrtTime(end)}\n`;
+            srtContent += `${text}\n\n`;
+        });
 
-        function createDownloadLink(content, fileName, mimeType) {
-            const blob = new Blob([content], { type: mimeType });
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = fileName;
-            link.innerText = `Download ${fileName}`;
-            document.getElementById('downloads').appendChild(link);
-            document.getElementById('downloads').appendChild(document.createElement('br'));
-        }
+        setupDownload('csvDownload', csvContent, 'transcription.csv', 'text/csv');
+        setupDownload('srtDownload', srtContent, 'subtitles.srt', 'text/plain');
+    }
 
-        window.initTranscriber = initTranscriber;
-        window.startTranscription = startTranscription;
-    </script>
-</head>
-<body onload="initTranscriber()">
-    <h2>Whisper WebGPU (Chinese M4A to CSV/SRT)</h2>
-    <p id="status">Checking WebGPU support...</p>
-    <input type="file" id="audioFile" accept=".m4a,.wav,.mp3" />
-    <button id="transcribeBtn" onclick="startTranscription()" disabled>Start Transcription</button>
-    <div id="downloads" style="margin-top: 20px;"></div>
+    function formatSrtTime(seconds) {
+        const date = new Date(0);
+        date.setSeconds(seconds);
+        const ms = Math.floor((seconds % 1) * 1000);
+        // Returns HH:MM:SS,mmm
+        return date.toISOString().substring(11, 19) + ',' + ms.toString().padStart(3, '0');
+    }
+
+    function setupDownload(elementId, content, filename, type) {
+        const blob = new Blob([content], { type: type });
+        const url = URL.createObjectURL(blob);
+        const el = document.getElementById(elementId);
+        el.href = url;
+        el.download = filename;
+        el.style.display = 'inline-block';
+    }
+
+    window.onload = init;
+    startBtn.onclick = processAudio;
+</script>
+
 </body>
 </html>
